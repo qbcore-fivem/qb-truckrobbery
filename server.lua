@@ -1,6 +1,8 @@
 local QBCore = exports['qb-core']:GetCoreObject({ 'Functions' })
 local sharedItems = exports['qb-core']:GetShared('Items')
 local ActiveMission = 0
+local MissionPlayer = nil  -- source of the player who accepted the current mission
+local RewardCooldowns = {} -- per-player cooldown to prevent rapid re-triggering
 
 RegisterServerEvent('AttackTransport:akceptujto', function()
 	local copsOnDuty = 0
@@ -22,6 +24,7 @@ RegisterServerEvent('AttackTransport:akceptujto', function()
 			if copsOnDuty >= Config.ActivePolice then
 				TriggerClientEvent('AttackTransport:Pozwolwykonac', _source)
 				xPlayer.Functions.RemoveMoney('bank', Config.ActivationCost, 'armored-truck')
+				MissionPlayer = _source
 				OdpalTimer()
 			else
 				TriggerClientEvent('QBCore:Notify', _source, 'Need at least ' .. Config.ActivePolice .. ' police to activate the mission.')
@@ -43,6 +46,7 @@ function OdpalTimer()
 	ActiveMission = 1
 	Wait(Config.ResetTimer * 1000)
 	ActiveMission = 0
+	MissionPlayer = nil
 	TriggerClientEvent('AttackTransport:CleanUp', -1)
 end
 
@@ -50,9 +54,38 @@ RegisterServerEvent('AttackTransport:zawiadompsy', function(x, y, z)
 	TriggerClientEvent('AttackTransport:InfoForLspd', -1, x, y, z)
 end)
 
-RegisterServerEvent('AttackTransport:graczZrobilnapad', function()
+RegisterServerEvent('AttackTransport:graczZrobilnapad', function(lootTime)
 	local _source = source
+
+	-- Must be an active mission
+	if ActiveMission ~= 1 then
+		print('[qb-truckrobbery] Reward rejected for source ' .. _source .. ': no active mission')
+		return
+	end
+
+	-- Must be the player who accepted the mission
+	if MissionPlayer ~= _source then
+		print('[qb-truckrobbery] Reward rejected for source ' .. _source .. ': did not start the mission')
+		return
+	end
+
+	-- lootTime must be a positive number (client sends elapsed milliseconds)
+	if type(lootTime) ~= 'number' or lootTime <= 0 then
+		print('[qb-truckrobbery] Reward rejected for source ' .. _source .. ': invalid lootTime (' .. tostring(lootTime) .. ')')
+		return
+	end
+
+	-- Per-player cooldown: prevent duplicate reward calls within the mission window
+	local now = os.time()
+	if RewardCooldowns[_source] and now - RewardCooldowns[_source] < Config.ResetTimer then
+		print('[qb-truckrobbery] Reward rejected for source ' .. _source .. ': cooldown active')
+		return
+	end
+	RewardCooldowns[_source] = now
+
 	local xPlayer = exports['qb-core']:GetPlayer(_source)
+	if not xPlayer then return end
+
 	local bags = math.random(1, 3)
 	local info = {
 		worth = math.random(Config.Payout.Min, Config.Payout.Max)
@@ -67,5 +100,9 @@ RegisterServerEvent('AttackTransport:graczZrobilnapad', function()
 		exports['qb-inventory']:AddItem(_source, 'security_card_01', 1, false, false, 'AttackTransport:graczZrobilnapad')
 		TriggerClientEvent('qb-inventory:client:ItemBox', _source, sharedItems['security_card_01'], 'add')
 	end
+
+	-- Mission is now complete; reset state so a new mission can start
+	ActiveMission = 0
+	MissionPlayer = nil
 	Wait(2500)
 end)
